@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -645,51 +646,154 @@ namespace Experiments
 
         }
 
-        static void Main(string[] args)
+        static double Benchmark(Action act)
         {
-            /*if (args.Length == 1)
-            {
-                var defaultOut = Console.Out;
-
-                var fileStream = File.Create(args[0], 1024, FileOptions.WriteThrough);
-                var fileWriter = new StreamWriter(fileStream);
-                fileWriter.AutoFlush = true;
-
-                Console.SetOut(new ForkedWriter(defaultOut, fileWriter));
-            }
-
-            var best = FindFastOrder();
-
-            Console.WriteLine();
-            Console.WriteLine("**" + string.Join(", ", best) + "**");
-
-            Console.ReadKey();*/
-
+            var watch = new Stopwatch();
+            watch.Start();
             for (var i = 0; i < 100000; i++)
             {
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("1234"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("-1.234"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("\"hello world\""));
-                Console.WriteLine((string)Jil.JSON.DeserializeDynamic("null"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("true"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("false"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("[]"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("[1,2,3,4,5]"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("[1.2, -3.4, 4.5]"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("[\"hello\", \"world\", \"foo\", \"bar\"]"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("[null, true, false]"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("{}"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("{\"hello\": 123, \"world\":456}"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("{\"hello\": -1.234, \"world\": 4.567}"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("{\"hello\": \"foo\", \"world\": \"bar\"}"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("{\"hello\": null, \"world\": null}"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("{\"hello\": true, \"world\": false}"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("{\"hello\": [], \"world\": [\"hello\", \"world\", \"foo\", \"bar\"]}"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("{\"hello\": [1,2,3,4,5], \"world\": [1.2, -3.4, 4.5]}"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("{\"hello\": [null, true, false], \"world\": {}}"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("{\"hello\": {\"hello\": 123, \"world\":456}, \"world\": {\"hello\": \"foo\", \"world\": \"bar\"}}"));
-                Console.WriteLine(Jil.JSON.DeserializeDynamic("[{\"hello\": 123, \"world\":456}, {\"hello\": -1.234, \"world\": 4.567}, {\"hello\": \"foo\", \"world\": \"bar\"}]"));
+                act();
             }
+            watch.Stop();
+
+            return watch.ElapsedMilliseconds;
+        }
+
+        static void EqualityCheck(char[] a, char[] b)
+        {
+            for (var i = 0; i < a.Length; i++)
+            {
+                if (a[i] != b[i]) throw new Exception("Nope!");
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        unsafe static void CopyUnsafe(char[] from, char[] into)
+        {
+            fixed (char* fromPtrFixed = from)
+            fixed (char* intoPtrFixed = into)
+            {
+                var fromPtr = (long*)fromPtrFixed;
+                var intoPtr = (long*)intoPtrFixed;
+
+                var longLen = from.Length >> 2;
+                
+                while (longLen > 0)
+                {
+                    *intoPtr = *fromPtr;
+                    fromPtr++;
+                    intoPtr++;
+                    longLen--;
+                }
+            }
+        }
+
+        static void CopySafe(char[] from, char[] into)
+        {
+            Array.Copy(from, into, from.Length);
+        }
+
+        static double Median(List<double> es)
+        {
+            var ordered = es.OrderBy(_ => _).ToList();
+
+            if (ordered.Count % 2 == 1) return ordered[ordered.Count / 2];
+
+
+            return (ordered[ordered.Count / 2 - 1] + ordered[ordered.Count / 2]) / 2;
+        }
+
+        static void Print(string name, List<double> times)
+        {
+            var min = times.Min();
+            var max = times.Max();
+
+            times.Remove(min);
+            times.Remove(max);
+
+            var avg = times.Average();
+            var median = Median(times);
+
+            Console.WriteLine(name);
+            Console.WriteLine("====");
+            Console.WriteLine("\tAverage: " + avg + "ms");
+            Console.WriteLine("\tMedian: " + median + "ms");
+        }
+
+        static List<Tuple<char[], char[]>> MakeBuffers()
+        {
+            var ret = new List<Tuple<char[], char[]>>();
+
+            for (var i = 4; i <= 128; i+=4)
+            {
+                ret.Add(Tuple.Create(Enumerable.Range(0, i).Select(_ => (char)_).ToArray(), new char[128]));
+            }
+
+            return ret;
+        }
+
+        static void Main(string[] args)
+        {
+            var safeBuffers = MakeBuffers();
+            Action safe = 
+                () => 
+                {
+                    for (var i = 0; i < safeBuffers.Count; i++)
+                    {
+                        var safeBuff = safeBuffers[i].Item1;
+                        var safeCopyInto = safeBuffers[i].Item2;
+
+                        CopySafe(safeBuff, safeCopyInto);
+                        EqualityCheck(safeBuff, safeCopyInto);
+                    }
+                };
+
+            var unsafeBuffers = MakeBuffers();
+            Action @unsafe =
+                () =>
+                {
+                    for (var i = 0; i < unsafeBuffers.Count; i++)
+                    {
+                        var unsafeBuff = unsafeBuffers[i].Item1;
+                        var unsafeCopyInto = unsafeBuffers[i].Item2;
+
+                        CopyUnsafe(unsafeBuff, unsafeCopyInto);
+                        EqualityCheck(unsafeBuff, unsafeCopyInto);
+                    }
+                };
+
+            var safeTimes = new List<double>();
+            var unsafeTimes = new List<double>();
+
+            for(var i = 0; i < 5; i++)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true);
+                safeTimes.Add(Benchmark(safe));
+                GC.Collect(2, GCCollectionMode.Forced, true);
+                unsafeTimes.Add(Benchmark(@unsafe));
+            }
+
+            safeTimes.Clear();
+            unsafeTimes.Clear();
+
+            for (var i = 0; i < 5; i++)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true);
+                safeTimes.Add(Benchmark(safe));
+                GC.Collect(2, GCCollectionMode.Forced, true);
+                unsafeTimes.Add(Benchmark(@unsafe));
+            }
+
+            for (var i = 0; i < 5; i++)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true);
+                unsafeTimes.Add(Benchmark(@unsafe));
+                GC.Collect(2, GCCollectionMode.Forced, true);
+                safeTimes.Add(Benchmark(safe));
+            }
+
+            Print("safe", safeTimes);
+            Print("unsafe", unsafeTimes);
         }
     }
 }
